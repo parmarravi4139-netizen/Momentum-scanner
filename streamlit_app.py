@@ -1,55 +1,64 @@
 import streamlit as st
 import pandas as pd
+import yfinance as yf
 import requests
 
 st.set_page_config(page_title="Momentum Scanner", layout="wide")
+st.title("📈 Daily Momentum Breakout Scanner (Live Data + Auto Symbols)")
 
-st.title("📈 Daily Momentum Breakout Scanner (Auto-Run + Auto Symbol Detection)")
-
-# ✅ Your GitHub raw data folder URL
-DATA_SOURCE = "https://api.github.com/repos/parmarravi4139-netizen/momentum-scanner/contents/"
-
-RAW_BASE = "https://raw.githubusercontent.com/parmarravi4139-netizen/momentum-scanner/main/"
-
+# ✅ Fetch NIFTY 500 + Smallcap 250 symbols from NSE website
 @st.cache_data
-def get_all_csv_files():
-    """Fetch all CSV filenames from GitHub repo automatically."""
-    try:
-        response = requests.get(DATA_SOURCE)
-        data = response.json()
-        csv_files = [item["name"] for item in data if item["name"].lower().endswith(".csv")]
-        return csv_files
-    except:
-        return []
+def get_index_symbols():
+    urls = {
+        "NIFTY500": "https://www1.nseindia.com/content/indices/ind_nifty500list.csv",
+        "SMALLCAP250": "https://www1.nseindia.com/content/indices/ind_niftysmallcap250list.csv"
+    }
 
+    headers = {"User-Agent": "Mozilla/5.0"}
+    symbols = []
+
+    for name, url in urls.items():
+        try:
+            df = pd.read_csv(url, headers=headers)
+            df.columns = df.columns.str.strip()
+            symbols.extend(df["Symbol"].tolist())
+        except:
+            pass
+
+    return list(set(symbols))  # unique symbols
+
+
+# ✅ Fetch live OHLCV data
 @st.cache_data
-def load_csv(file_name):
-    url = RAW_BASE + file_name
+def get_live_data(symbol):
     try:
-        df = pd.read_csv(url)
+        df = yf.download(symbol + ".NS", period="400d")
+        df = df.reset_index()
+        df = df.rename(columns={
+            "Date": "Date",
+            "Open": "Open",
+            "High": "High",
+            "Low": "Low",
+            "Close": "Close",
+            "Volume": "Volume"
+        })
         return df
     except:
         return None
 
 
+# ✅ Strategy logic
 def scan_stock(df):
-    if not set(["Open", "High", "Low", "Close", "Volume"]).issubset(df.columns):
-        return False
-
-    df = df.copy()
-    df['EMA20'] = df['Close'].ewm(span=20, adjust=False).mean()
-    df['EMA50'] = df['Close'].ewm(span=50, adjust=False).mean()
-    df['AvgVol20'] = df['Volume'].rolling(20).mean()
-    df['RollMax252'] = df['Close'].rolling(252).max()
-    df["RS"] = df["Close"] / df["Close"].rolling(50).mean()
-
     if len(df) < 260:
         return False
 
-    df = df.dropna().reset_index(drop=True)
-    if len(df) == 0:
-        return False
+    df["EMA20"] = df["Close"].ewm(span=20, adjust=False).mean()
+    df["EMA50"] = df["Close"].ewm(span=50, adjust=False).mean()
+    df["AvgVol20"] = df["Volume"].rolling(20).mean()
+    df["RollMax252"] = df["Close"].rolling(252).max()
+    df["RS"] = df["Close"] / df["Close"].rolling(50).mean()
 
+    df = df.dropna().reset_index(drop=True)
     i = len(df) - 1
     row = df.iloc[i]
     prev = df.iloc[i - 1]
@@ -57,46 +66,39 @@ def scan_stock(df):
     if row["RS"] < 1.02:
         return False
 
-    if i < 10:
-        return False
     base = df.iloc[i-10:i]
     base_range = (base["High"].max() - base["Low"].min()) / row["Close"]
     if base_range > 0.07:
         return False
 
-    if not ((row['Close'] > row['EMA20']) and
-            (row['Close'] > row['EMA50']) and
-            (row['Close'] >= 0.9 * row['RollMax252'])):
+    if not ((row["Close"] > row["EMA20"]) and
+            (row["Close"] > row["EMA50"]) and
+            (row["Close"] >= 0.9 * row["RollMax252"])):
         return False
 
-    if not ((row['Close'] > prev['High']) and (row['Volume'] > 1.5 * row['AvgVol20'])):
+    if not ((row["Close"] > prev["High"]) and (row["Volume"] > 1.5 * row["AvgVol20"])):
         return False
 
     return True
 
 
-st.info("⏳ Auto-detecting symbols and scanning…")
+st.info("⏳ Fetching symbols from NIFTY 500 + Smallcap 250…")
+symbols = get_index_symbols()
+st.write(f"✅ Total symbols loaded: {len(symbols)}")
 
-# ✅ Auto-detect CSV files from GitHub
-symbol_files = get_all_csv_files()
-
-st.write(f"✅ Total symbols detected: {len(symbol_files)}")
+st.info("⏳ Running live scanner…")
 
 results = []
 failed = []
 
-for file_name in symbol_files:
-    df = load_csv(file_name)
-    if df is None:
-        failed.append(file_name)
+for sym in symbols:
+    df = get_live_data(sym)
+    if df is None or df.empty:
+        failed.append(sym)
         continue
 
-    if "Date" in df.columns:
-        df["Date"] = pd.to_datetime(df["Date"], errors="coerce")
-        df = df.sort_values("Date").reset_index(drop=True)
-
     if scan_stock(df):
-        results.append(file_name.replace(".csv", ""))
+        results.append(sym)
 
 st.success("✅ Scan Completed")
 
@@ -104,5 +106,5 @@ st.subheader("📌 Breakout Stocks Today")
 st.write(results if results else "No breakouts today.")
 
 if failed:
-    with st.expander("⚠️ Files that could not be loaded"):
+    with st.expander("⚠️ Failed to fetch data for"):
         st.write(failed)
