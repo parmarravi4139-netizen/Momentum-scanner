@@ -1,35 +1,25 @@
 import streamlit as st
 import pandas as pd
 import yfinance as yf
-import requests
 
 st.set_page_config(page_title="Momentum Scanner", layout="wide")
 st.title("📈 Daily Momentum Breakout Scanner (Live Data + Auto Symbols)")
 
-# ✅ Fetch NIFTY 500 + Smallcap 250 symbols from NSE website
-@st.cache_data
+# ✅ Fetch NIFTY 500 + Smallcap 250 symbols from GitHub (100% reliable)
+@st.cache_data(ttl=86400)
 def get_index_symbols():
-    urls = {
-        "NIFTY500": "https://www1.nseindia.com/content/indices/ind_nifty500list.csv",
-        "SMALLCAP250": "https://www1.nseindia.com/content/indices/ind_niftysmallcap250list.csv"
-    }
+    url1 = "https://raw.githubusercontent.com/saikr789/NSE-Stock-Indices/main/ind_nifty500list.csv"
+    url2 = "https://raw.githubusercontent.com/saikr789/NSE-Stock-Indices/main/ind_niftysmallcap250list.csv"
 
-    headers = {"User-Agent": "Mozilla/5.0"}
-    symbols = []
+    df1 = pd.read_csv(url1)
+    df2 = pd.read_csv(url2)
 
-    for name, url in urls.items():
-        try:
-            df = pd.read_csv(url, headers=headers)
-            df.columns = df.columns.str.strip()
-            symbols.extend(df["Symbol"].tolist())
-        except:
-            pass
-
-    return list(set(symbols))  # unique symbols
+    symbols = list(df1["Symbol"].unique()) + list(df2["Symbol"].unique())
+    return list(set(symbols))  # unique list
 
 
-# ✅ Fetch live OHLCV data
-@st.cache_data
+# ✅ Fetch live OHLCV data (cached for 24 hours)
+@st.cache_data(ttl=86400)
 def get_live_data(symbol):
     try:
         df = yf.download(symbol + ".NS", period="400d")
@@ -63,25 +53,30 @@ def scan_stock(df):
     row = df.iloc[i]
     prev = df.iloc[i - 1]
 
+    # ✅ RS filter
     if row["RS"] < 1.02:
         return False
 
+    # ✅ Base range (last 10 candles)
     base = df.iloc[i-10:i]
     base_range = (base["High"].max() - base["Low"].min()) / row["Close"]
     if base_range > 0.07:
         return False
 
+    # ✅ Trend filter
     if not ((row["Close"] > row["EMA20"]) and
             (row["Close"] > row["EMA50"]) and
             (row["Close"] >= 0.9 * row["RollMax252"])):
         return False
 
+    # ✅ Breakout + Volume spike
     if not ((row["Close"] > prev["High"]) and (row["Volume"] > 1.5 * row["AvgVol20"])):
         return False
 
     return True
 
 
+# ✅ MAIN APP FLOW
 st.info("⏳ Fetching symbols from NIFTY 500 + Smallcap 250…")
 symbols = get_index_symbols()
 st.write(f"✅ Total symbols loaded: {len(symbols)}")
